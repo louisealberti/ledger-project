@@ -1,4 +1,4 @@
-// Package transaction manages the business logic for financial movements.
+// Package transaction implements the core business rules for ledger operations.
 package transaction
 
 import (
@@ -9,75 +9,126 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog"     // used for the Logger type
+	"github.com/rs/zerolog/log" // used for the global logger instance
 )
 
-// Service coordinates complex operations between accounts and the database.
+type AccountRepository interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*account.Account, error)
+	UpdateBalance(ctx context.Context, tx pgx.Tx, id uuid.UUID, amount int64) error
+}
+
+type TransactionRepository interface {
+	CreateIdempotencyKey(ctx context.Context, tx pgx.Tx, key uuid.UUID) error
+	Create(ctx context.Context, tx pgx.Tx, t *Transaction) error
+}
+
+// DBPool defines the behavior required to start a database transaction.
+// This allows us to swap the real pgxpool.Pool for a Mock during unit tests.
+type DBPool interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 type Service struct {
-	conn        *pgx.Conn
-	accountRepo *account.Repository
-	txRepo      *Repository
+	pool    DBPool
+	accRepo AccountRepository
+	txRepo  TransactionRepository
 }
 
-// NewService returns a new transaction service instance.
-func NewService(conn *pgx.Conn, ar *account.Repository, tr *Repository) *Service {
-	return &Service{
-		conn:        conn,
-		accountRepo: ar,
-		txRepo:      tr,
+func NewService(pool DBPool, accRepo AccountRepository, txRepo TransactionRepository) *Service {
+	return &Service{pool: pool, accRepo: accRepo, txRepo: txRepo}
+}
+
+// ExecuteTransfer orchestrates the fund transfer between two accounts within a database transaction.
+// It ensures atomicity, idempotency, and provides structured logging for observability.
+func (s *Service) ExecuteTransfer(ctx context.Context, fromID, toID uuid.UUID, amount int64, desc string, idKey uuid.UUID) error {
+	// Creating a sub-logger with the Idempotency Key to trace this specific request
+	subLog := log.With().
+		Str("component", "transaction_service").
+		Interface("idKey", idKey).
+		Logger()
+
+	subLog.Info().
+		Interface("from_id", fromID).
+		Interface("to_id", toID).
+		Int64("amount", amount).
+		Msg("Processing transfer request")
+
+	if amount <= 0 {
+		subLog.Warn().Int64("amount", amount).Msg("Transfer rejected: invalid amount")
+		return ErrInvalidAmount
 	}
-}
 
-// ExecuteTransfer performs a complete monetary movement between two accounts.
-// It ensures atomicity by using a database transaction.
-func (s *Service) ExecuteTransfer(ctx context.Context, fromID, toID uuid.UUID, amount int64, desc string) error {
-	// 1. Iniciar a transação no banco
-	tx, err := s.conn.Begin(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to begin tx: %w", err)
+		subLog.Error().Err(err).Msg("Database connection error: failed to begin transaction")
+		return err
 	}
 	defer tx.Rollback(ctx)
 
-	// 2. Buscar as contas (Usando o repository injetado na struct)
-	from, err := s.accountRepo.GetByID(ctx, fromID)
+	// Passing the sub-logger to the internal process to maintain context
+	if err := s.processTransfer(ctx, tx, fromID, toID, amount, desc, idKey, subLog); err != nil {
+		if err.Error() == "IDEMPOTENCY_STOP" {
+			subLog.Info().Msg("Request skipped: idempotency key already processed")
+			return nil
+		}
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		subLog.Error().Err(err).Msg("Critical failure: transaction commit failed")
+		return err
+	}
+
+	subLog.Info().Msg("Transfer successfully executed")
+	return nil
+}
+
+// processTransfer contains the core business logic.
+// It uses zerolog.Logger as the type for the logger parameter.
+func (s *Service) processTransfer(ctx context.Context, tx pgx.Tx, fromID, toID uuid.UUID, amount int64, desc string, idKey uuid.UUID, logger zerolog.Logger) error {
+	// 1. Idempotency Check
+	if err := s.txRepo.CreateIdempotencyKey(ctx, tx, idKey); err != nil {
+		return fmt.Errorf("IDEMPOTENCY_STOP")
+	}
+
+	// 2. Source Account Validation
+	fromAcc, err := s.accRepo.GetByID(ctx, fromID)
 	if err != nil {
-		return err
-	}
-	to, err := s.accountRepo.GetByID(ctx, toID)
-	if err != nil {
-		return err
+		logger.Error().Err(err).Interface("account_id", fromID).Msg("Source account lookup failed")
+		return ErrAccountNotFound
 	}
 
-	// 3. Lógica em memória (Deposit/Withdraw)
-	if err := from.Withdraw(amount); err != nil {
-		return err
-	}
-	if err := to.Deposit(amount); err != nil {
-		return err
-	}
-
-	// 4. Persistir novos saldos
-	if err := s.accountRepo.UpdateBalance(ctx, from.ID, from.Balance); err != nil {
-		return err
-	}
-	if err := s.accountRepo.UpdateBalance(ctx, to.ID, to.Balance); err != nil {
-		return err
+	if fromAcc.Balance < amount {
+		logger.Warn().
+			Int64("current_balance", fromAcc.Balance).
+			Int64("requested_amount", amount).
+			Msg("Transfer denied: insufficient balance")
+		return ErrInsufficientFunds
 	}
 
-	// 5. Salvar registro da transação
-	record := Transaction{
+	// 3. Atomic Balance Updates
+	if err := s.accRepo.UpdateBalance(ctx, tx, fromID, -amount); err != nil {
+		// This should only fail if balance changed between GetByID and UpdateBalance
+		return ErrInsufficientFunds
+	}
+
+	if err := s.accRepo.UpdateBalance(ctx, tx, toID, amount); err != nil {
+		logger.Error().Err(err).Interface("to_id", toID).Msg("Failed to credit destination account")
+		return fmt.Errorf("service: credit failed: %w", err)
+	}
+
+	// 4. Record Transaction History
+	newTx := Transaction{
 		ID:             uuid.New(),
-		AccountFromID:  &from.ID,
-		AccountToID:    &to.ID,
+		AccountFromID:  &fromID,
+		AccountToID:    &toID,
 		Amount:         amount,
 		Description:    desc,
-		IdempotencyKey: uuid.New(),
+		IdempotencyKey: idKey,
 		Status:         "completed",
 		CreatedAt:      time.Now(),
 	}
 
-	if err := s.txRepo.Save(ctx, record); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return s.txRepo.Create(ctx, tx, &newTx)
 }

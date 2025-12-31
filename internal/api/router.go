@@ -1,14 +1,16 @@
-// Package api handles the routing logic for the ledger server.
 package api
 
-import "net/http"
+import (
+	"net/http"
+)
 
-// NewRouter sets up the routes and returns a standard http.Handler.
+// NewRouter initializes the API routes and returns an http.Handler.
+// We use the standard library here, but this could easily be swapped for Echo/Gin.
 func NewRouter(h *Handler) http.Handler {
 	mux := http.NewServeMux()
 
-	// Registering the transfer endpoint
-	mux.HandleFunc("/transfer", h.TransferHandle)
+	// Route definitions
+	mux.HandleFunc("POST /transfer", h.TransferHandler)
 
 	return mux
 }

@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool" // Import the pool sub-package
 	"github.com/joho/godotenv"
 )
 
-// ConnectDB initializes a PostgreSQL connection using environment variables.
-// It loads the .env file, parses the DB_URL, and validates the connection with a Ping.
-func ConnectDB() *pgx.Conn {
+// ConnectDB initializes a PostgreSQL connection pool using environment variables.
+// It loads the .env file and establishes a resilient pool for high-concurrency ledger operations.
+func ConnectDB() *pgxpool.Pool {
 	err := godotenv.Load()
 	if err != nil {
 		fmt.Println("Warning: .env file not found, using system env")
@@ -25,22 +25,19 @@ func ConnectDB() *pgx.Conn {
 	}
 
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(connStr)
+
+	// NewPool creates a connection pool, which is much better for production than a single connection.
+	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Unable to create connection pool: %v\n", err)
 		os.Exit(1)
 	}
 
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Connection error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err = conn.Ping(ctx); err != nil {
+	// Validate the connection
+	if err = pool.Ping(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Database unreachable: %v\n", err)
 		os.Exit(1)
 	}
 
-	return conn
+	return pool
 }

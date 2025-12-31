@@ -8,27 +8,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log" // Importando o logger global
 )
 
 // SeedInitialData populates the database with test accounts to facilitate development.
-func SeedInitialData(ctx context.Context, conn *pgx.Conn) error {
-	// Removi a linha 'repo := account.NewRepository(conn)' pois não estava sendo usada
-	// e o Go proíbe variáveis declaradas e não utilizadas.
+// It uses pgxpool.Pool for concurrent-safe database access.
+func SeedInitialData(ctx context.Context, db *pgxpool.Pool) error {
+	// Creating fixed UUIDs for development makes testing with CURL much easier.
+	// However, if you prefer dynamic ones, we will log them clearly.
 
-	// Test Account 1: The Sender (1000.00 BRL)
 	acc1 := account.Account{
-		ID:        uuid.New(), // Removido .String()
-		OwnerID:   uuid.New(), // Removido .String()
+		ID:        uuid.New(),
+		OwnerID:   uuid.New(),
 		Balance:   100000,
 		Active:    true,
 		UpdatedAt: time.Now(),
 	}
 
-	// Test Account 2: The Receiver (0.00 BRL)
 	acc2 := account.Account{
-		ID:        uuid.New(), // Removido .String()
-		OwnerID:   uuid.New(), // Removido .String()
+		ID:        uuid.New(),
+		OwnerID:   uuid.New(),
 		Balance:   0,
 		Active:    true,
 		UpdatedAt: time.Now(),
@@ -36,13 +36,18 @@ func SeedInitialData(ctx context.Context, conn *pgx.Conn) error {
 
 	for _, acc := range []account.Account{acc1, acc2} {
 		query := `INSERT INTO accounts (id, owner_id, balance, active, updated_at) 
-		          VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`
+                  VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`
 
-		_, err := conn.Exec(ctx, query, acc.ID, acc.OwnerID, acc.Balance, acc.Active, acc.UpdatedAt)
+		_, err := db.Exec(ctx, query, acc.ID, acc.OwnerID, acc.Balance, acc.Active, acc.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("failed to seed account %s: %w", acc.ID, err)
 		}
-		fmt.Printf("Account seeded: %s | Balance: %d\n", acc.ID, acc.Balance)
+
+		// Usando Zerolog para manter o padrão profissional do projeto
+		log.Info().
+			Interface("account_id", acc.ID).
+			Int64("balance", acc.Balance).
+			Msg("Database record seeded successfully")
 	}
 
 	return nil
