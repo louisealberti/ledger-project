@@ -19,8 +19,9 @@ type AccountRepository interface {
 }
 
 type TransactionRepository interface {
-	CreateIdempotencyKey(ctx context.Context, tx pgx.Tx, key uuid.UUID) error
-	Create(ctx context.Context, tx pgx.Tx, t *Transaction) error
+    CreateIdempotencyKey(ctx context.Context, tx pgx.Tx, key uuid.UUID) error
+    Create(ctx context.Context, tx pgx.Tx, t *Transaction) error
+    GetByAccountID(ctx context.Context, accountID uuid.UUID) ([]Transaction, error)
 }
 
 // DBPool defines the behavior required to start a database transaction.
@@ -141,4 +142,17 @@ func (s *Service) GetBalance(ctx context.Context, accountID uuid.UUID) (int64, e
 		return 0, err
 	}
 	return acc.Balance, nil
+}
+
+// GetStatement retrieves all credit and debit transactions for a specific account.
+// It returns a slice of Transaction models or an error if the account cannot be accessed.
+func (s *Service) GetStatement(ctx context.Context, accountID uuid.UUID) ([]Transaction, error) {
+
+	transactions, err := s.txRepo.GetByAccountID(ctx, accountID)
+	if err != nil {
+		log.Error().Err(err).Interface("account_id", accountID).Msg("Failed to fetch transactions for statement")
+		return nil, err
+	}
+
+	return transactions, nil
 }

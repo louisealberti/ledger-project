@@ -105,3 +105,25 @@ func (h *Handler) GetBalance(w http.ResponseWriter, r *http.Request) {
 		"balance":    balance,
 	})
 }
+
+// GetStatement handles the HTTP request to show an account's transaction history.
+func (h *Handler) GetStatement(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+
+	accountID, err := uuid.Parse(idStr)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid account id format"})
+		return
+	}
+
+	transactions, err := h.txService.GetStatement(r.Context(), accountID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "could not retrieve statement"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(transactions)
+}
