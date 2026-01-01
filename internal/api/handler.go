@@ -77,3 +77,31 @@ func (h *Handler) TransferHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Transfer processed successfully"})
 }
+
+// GetBalance handles HTTP requests to fetch an account's balance.
+// It expects the account ID as a query parameter (e.g., /balance?id=UUID).
+func (h *Handler) GetBalance(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+
+	accountID, err := uuid.Parse(idStr)
+	if err != nil {
+		log.Warn().Str("id", idStr).Msg("Invalid UUID provided for balance check")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid account id format"})
+		return
+	}
+
+	balance, err := h.txService.GetBalance(r.Context(), accountID)
+	if err != nil {
+		log.Error().Err(err).Interface("account_id", accountID).Msg("Failed to retrieve balance")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "account not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"account_id": accountID,
+		"balance":    balance,
+	})
+}

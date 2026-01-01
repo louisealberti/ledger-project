@@ -11,6 +11,7 @@ func NewRouter(h *Handler) http.Handler {
 
 	// Route definitions
 	mux.HandleFunc("POST /transfer", h.TransferHandler)
+	mux.HandleFunc("GET /balance", h.GetBalance)
 
 	return mux
 }
