@@ -132,3 +132,13 @@ func (s *Service) processTransfer(ctx context.Context, tx pgx.Tx, fromID, toID u
 
 	return s.txRepo.Create(ctx, tx, &newTx)
 }
+
+// GetBalance retrieves the current balance of a specific account.
+// It returns the balance in cents (int64) to avoid floating point issues.
+func (s *Service) GetBalance(ctx context.Context, accountID uuid.UUID) (int64, error) {
+	acc, err := s.accRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return acc.Balance, nil
+}

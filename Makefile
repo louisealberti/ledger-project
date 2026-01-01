@@ -3,6 +3,7 @@ DB_CONTAINER_NAME=ledger-postgres
 DB_NAME=ledger_db
 DB_USER=postgres
 
+
 ## help: Show this help message
 help:
 	@echo "Usage: make [target]"
@@ -33,3 +34,8 @@ db-clean:
 ## tidy: Clean up go.mod and download dependencies
 tidy:
 	go mod tidy
+
+## db-reset: DANGER - Truncates all data but keeps the schema
+db-reset:
+	docker exec -it ledger-db psql -U postgres -d ledger -c "TRUNCATE TABLE transactions, idempotency_keys, accounts CASCADE;"
+	@echo "Database cleaned. Run 'make run' to seed initial data again."
